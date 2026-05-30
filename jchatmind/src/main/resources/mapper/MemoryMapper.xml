@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.kama.jchatmind.mapper.MemoryMapper">
+
+    <resultMap id="BaseResultMap" type="com.kama.jchatmind.model.entity.Memory">
+        <id property="id" column="id" jdbcType="VARCHAR"/>
+        <result property="userId" column="user_id" jdbcType="VARCHAR"/>
+        <result property="agentId" column="agent_id" jdbcType="VARCHAR"/>
+        <result property="type" column="type" jdbcType="VARCHAR"/>
+        <result property="content" column="content" jdbcType="VARCHAR"/>
+        <result property="sourceSessionId" column="source_session_id" jdbcType="VARCHAR"/>
+        <result property="sourceMessageIds" column="source_message_ids" jdbcType="VARCHAR"/>
+        <result property="importanceScore" column="importance_score" jdbcType="DOUBLE"/>
+        <result property="status" column="status" jdbcType="VARCHAR"/>
+        <result property="embedding" column="embedding" jdbcType="OTHER"/>
+        <result property="metadata" column="metadata" jdbcType="VARCHAR"/>
+        <result property="createdAt" column="created_at" jdbcType="TIMESTAMP"/>
+        <result property="updatedAt" column="updated_at" jdbcType="TIMESTAMP"/>
+        <result property="lastAccessedAt" column="last_accessed_at" jdbcType="TIMESTAMP"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.kama.jchatmind.model.entity.Memory"
+            keyColumn="id" keyProperty="id" useGeneratedKeys="true">
+        INSERT INTO memory
+        (user_id, agent_id, type, content, source_session_id, source_message_ids,
+         importance_score, status, embedding, metadata, created_at, updated_at, last_accessed_at)
+        VALUES
+        (CAST(#{userId} AS uuid), CAST(#{agentId} AS uuid), #{type}, #{content},
+         CAST(#{sourceSessionId} AS uuid), CAST(#{sourceMessageIds} AS jsonb),
+         #{importanceScore}, #{status}, #{embedding}::vector, CAST(#{metadata} AS jsonb),
+         #{createdAt}, #{updatedAt}, #{lastAccessedAt})
+    </insert>
+
+    <select id="selectActiveByAgentId" resultMap="BaseResultMap">
+        SELECT id,
+               user_id,
+               agent_id,
+               type,
+               content,
+               source_session_id,
+               source_message_ids::text AS source_message_ids,
+               importance_score,
+               status,
+               embedding,
+               metadata::text AS metadata,
+               created_at,
+               updated_at,
+               last_accessed_at
+        FROM memory
+        WHERE agent_id = CAST(#{agentId} AS uuid)
+          AND status = 'active'
+        ORDER BY importance_score DESC, updated_at DESC
+        LIMIT 20
+    </select>
+
+    <select id="recallByEmbedding" resultMap="BaseResultMap">
+        <![CDATA[
+        SELECT id,
+               user_id,
+               agent_id,
+               type,
+               content,
+               source_session_id,
+               source_message_ids::text AS source_message_ids,
+               (
+                   CASE
+                       WHEN embedding IS NULL THEN 0.0
+                       ELSE 1.0 / (1.0 + (embedding <-> #{vectorLiteral}::vector))
+                   END * 0.62
+                   + COALESCE(importance_score, 0) * 0.28
+                   + EXP(-GREATEST(EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0, 0) / 30.0) * 0.10
+               ) AS importance_score,
+               status,
+               embedding,
+               metadata::text AS metadata,
+               created_at,
+               updated_at,
+               last_accessed_at
+        FROM memory
+        WHERE agent_id = CAST(#{agentId} AS uuid)
+          AND status = 'active'
+        ORDER BY importance_score DESC, updated_at DESC
+        LIMIT #{limit}
+        ]]>
+    </select>
+
+    <select id="selectEntityByAgentAndName" resultMap="BaseResultMap">
+        SELECT id,
+               user_id,
+               agent_id,
+               type,
+               content,
+               source_session_id,
+               source_message_ids::text AS source_message_ids,
+               importance_score,
+               status,
+               embedding,
+               metadata::text AS metadata,
+               created_at,
+               updated_at,
+               last_accessed_at
+        FROM memory
+        WHERE agent_id = CAST(#{agentId} AS uuid)
+          AND status = 'active'
+          AND type = 'entity'
+          AND metadata ->> 'entity' = #{entity}
+        ORDER BY updated_at DESC
+        LIMIT 1
+    </select>
+
+    <update id="updateById" parameterType="com.kama.jchatmind.model.entity.Memory">
+        UPDATE memory
+        <set>
+            <if test="type != null">
+                type = #{type},
+            </if>
+            <if test="content != null">
+                content = #{content},
+            </if>
+            <if test="sourceSessionId != null">
+                source_session_id = CAST(#{sourceSessionId} AS uuid),
+            </if>
+            <if test="sourceMessageIds != null">
+                source_message_ids = CAST(#{sourceMessageIds} AS jsonb),
+            </if>
+            <if test="importanceScore != null">
+                importance_score = #{importanceScore},
+            </if>
+            <if test="status != null">
+                status = #{status},
+            </if>
+            <if test="embedding != null">
+                embedding = #{embedding}::vector,
+            </if>
+            <if test="metadata != null">
+                metadata = CAST(#{metadata} AS jsonb),
+            </if>
+            updated_at = #{updatedAt},
+            last_accessed_at = #{lastAccessedAt}
+        </set>
+        WHERE id = CAST(#{id} AS uuid)
+    </update>
+
+    <update id="touchById">
+        UPDATE memory SET last_accessed_at = NOW()
+        WHERE id = CAST(#{id} AS uuid)
+    </update>
+
+    <update id="archiveById">
+        UPDATE memory SET status = 'archived', updated_at = NOW()
+        WHERE id = CAST(#{id} AS uuid)
+    </update>
+</mapper>

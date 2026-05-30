@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+
+jchatmind/target/
+jchatmind/src/main/resources/application-dev.yaml
+
+ui/node_modules/
+ui/dist/
+ui/dist-ssr/
+ui/*.local
+
+*.log

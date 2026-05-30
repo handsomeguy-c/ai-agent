@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.kama.jchatmind.mapper.ToolExecutionLogMapper">
+
+    <insert id="insert" parameterType="com.kama.jchatmind.model.entity.ToolExecutionLog"
+            keyColumn="id" keyProperty="id" useGeneratedKeys="true">
+        INSERT INTO tool_execution_log
+        (session_id, message_id, tool_name, arguments, result, status,
+         duration_ms, error_message, retry_count, created_at)
+        VALUES
+        (CAST(#{sessionId} AS uuid), CAST(#{messageId} AS uuid), #{toolName},
+         CAST(#{arguments} AS jsonb), #{result}, #{status}, #{durationMs},
+         #{errorMessage}, #{retryCount}, #{createdAt})
+    </insert>
+</mapper>
