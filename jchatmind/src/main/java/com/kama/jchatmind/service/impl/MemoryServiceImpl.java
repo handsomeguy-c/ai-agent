@@ -113,6 +113,33 @@ public class MemoryServiceImpl implements MemoryService {
     }
 
     @Override
+    public Memory saveLongTermMemory(String agentId, String sessionId, String content) {
+        if (!StringUtils.hasLength(agentId) || !StringUtils.hasLength(content)) {
+            throw new IllegalArgumentException("agentId and content cannot be empty");
+        }
+        String normalized = content.replaceAll("\\s+", " ").trim();
+        double importance = Math.max(0.82, scoreImportance(normalized));
+        Memory memory = Memory.builder()
+                .agentId(agentId)
+                .type("long_term")
+                .content(normalized)
+                .sourceSessionId(sessionId)
+                .importanceScore(clamp(importance))
+                .status("active")
+                .embedding(embedOrNull(normalized))
+                .metadata(toJson(Map.of(
+                        "memoryLayer", "long_term",
+                        "extractor", "mcp-mem0-style",
+                        "writePolicy", "explicit_tool_call",
+                        "keywords", queryRewriteService.analyze(normalized).getKeywords()
+                )))
+                .build();
+        saveMemory(memory);
+        upsertEntityMemories(agentId, sessionId, normalized, importance);
+        return memory;
+    }
+
+    @Override
     public void saveMemory(Memory memory) {
         LocalDateTime now = LocalDateTime.now();
         memory.setStatus(memory.getStatus() == null ? "active" : memory.getStatus());

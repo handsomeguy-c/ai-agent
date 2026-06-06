@@ -2,6 +2,7 @@ package com.kama.jchatmind.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kama.jchatmind.agent.tools.McpRemoteTools;
 import com.kama.jchatmind.agent.tools.Tool;
 import com.kama.jchatmind.agent.tools.ToolType;
 import com.kama.jchatmind.exception.BizException;
@@ -9,6 +10,7 @@ import com.kama.jchatmind.model.dto.ToolCallResponseDTO;
 import com.kama.jchatmind.model.dto.ToolSchemaDTO;
 import com.kama.jchatmind.service.ToolFacadeService;
 import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.stereotype.Service;
@@ -21,6 +23,7 @@ import java.util.Map;
 
 @Service
 @AllArgsConstructor
+@Slf4j
 public class ToolFacadeServiceImpl implements ToolFacadeService {
 
     private final List<Tool> tools;
@@ -55,6 +58,9 @@ public class ToolFacadeServiceImpl implements ToolFacadeService {
                         .returnDirect(callback.getToolMetadata().returnDirect())
                         .build());
             }
+            if (tool instanceof McpRemoteTools mcpRemoteTools) {
+                schemas.addAll(mcpRemoteTools.listRemoteToolSchemas());
+            }
         }
         return schemas;
     }
@@ -73,10 +79,11 @@ public class ToolFacadeServiceImpl implements ToolFacadeService {
                     .status("SUCCESS")
                     .build();
         } catch (Exception e) {
+            log.warn("工具调用失败: name={}, arguments={}, error={}", name, arguments, e.toString(), e);
             return ToolCallResponseDTO.builder()
                     .name(name)
                     .status("FAILED")
-                    .errorMessage(e.getMessage())
+                    .errorMessage(e.getMessage() == null ? e.toString() : e.getMessage())
                     .build();
         }
     }

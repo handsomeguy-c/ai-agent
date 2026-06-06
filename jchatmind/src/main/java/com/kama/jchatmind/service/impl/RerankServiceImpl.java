@@ -1,12 +1,18 @@
 package com.kama.jchatmind.service.impl;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kama.jchatmind.config.RerankProperties;
 import com.kama.jchatmind.model.dto.RagSearchResultDTO;
 import com.kama.jchatmind.service.RerankService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -17,12 +23,73 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
+@Slf4j
 public class RerankServiceImpl implements RerankService {
 
     private static final Pattern TOKEN_PATTERN = Pattern.compile("[\\p{IsHan}]{2,8}|[a-zA-Z][a-zA-Z0-9_\\-]{1,30}");
 
+    private final RerankProperties rerankProperties;
+    private final ObjectMapper objectMapper;
+    private final WebClient webClient;
+
+    public RerankServiceImpl(
+            RerankProperties rerankProperties,
+            ObjectMapper objectMapper,
+            WebClient.Builder webClientBuilder
+    ) {
+        this.rerankProperties = rerankProperties;
+        this.objectMapper = objectMapper;
+        this.webClient = webClientBuilder.build();
+    }
+
     @Override
     public List<RagSearchResultDTO> rerank(String query, List<RagSearchResultDTO> candidates) {
+        List<RagSearchResultDTO> crossEncoderResults = crossEncoderRerank(query, candidates);
+        if (!crossEncoderResults.isEmpty()) {
+            return crossEncoderResults;
+        }
+        return heuristicRerank(query, candidates);
+    }
+
+    private List<RagSearchResultDTO> crossEncoderRerank(String query, List<RagSearchResultDTO> candidates) {
+        if (!rerankProperties.isEnabled() || candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        try {
+            List<String> texts = candidates.stream()
+                    .map(candidate -> buildRerankText(candidate))
+                    .toList();
+            Map<String, Object> request = new LinkedHashMap<>();
+            request.put("model", rerankProperties.getModel());
+            request.put("query", query);
+            request.put("texts", texts);
+            request.put("documents", texts);
+
+            String response = webClient.post()
+                    .uri(rerankProperties.getEndpoint())
+                    .bodyValue(request)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+
+            List<Double> scores = parseScores(response, candidates.size());
+            if (scores.isEmpty()) {
+                return List.of();
+            }
+            for (int i = 0; i < candidates.size() && i < scores.size(); i++) {
+                double baseScore = candidates.get(i).getScore() == null ? 0.0 : candidates.get(i).getScore();
+                candidates.get(i).setScore(scores.get(i) * 0.72 + baseScore * 0.28);
+            }
+            return candidates.stream()
+                    .sorted(Comparator.comparing(RagSearchResultDTO::getScore, Comparator.nullsLast(Comparator.reverseOrder())))
+                    .toList();
+        } catch (Exception e) {
+            log.warn("Cross-encoder rerank failed, fallback to local rerank: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<RagSearchResultDTO> heuristicRerank(String query, List<RagSearchResultDTO> candidates) {
         Set<String> queryTokens = tokenize(query);
         double avgDocLength = candidates.stream()
                 .map(RagSearchResultDTO::getContent)
@@ -41,6 +108,48 @@ public class RerankServiceImpl implements RerankService {
                 .peek(candidate -> candidate.setScore(scoreCandidate(query, queryTokens, candidate, documentFrequency, candidates.size(), avgDocLength)))
                 .sorted(Comparator.comparing(RagSearchResultDTO::getScore, Comparator.nullsLast(Comparator.reverseOrder())))
                 .toList();
+    }
+
+    private String buildRerankText(RagSearchResultDTO candidate) {
+        RagSearchResultDTO.ChunkMeta meta = candidate.getMetadata();
+        String title = meta == null || meta.getTitle() == null ? "" : meta.getTitle();
+        String sectionPath = meta == null || meta.getSectionPath() == null ? "" : meta.getSectionPath();
+        String contextualSummary = meta == null || meta.getContextualSummary() == null ? "" : meta.getContextualSummary();
+        return (sectionPath + "\n" + title + "\n" + contextualSummary + "\n" + (candidate.getContent() == null ? "" : candidate.getContent())).trim();
+    }
+
+    private List<Double> parseScores(String response, int expectedSize) throws Exception {
+        if (response == null || response.isBlank()) {
+            return List.of();
+        }
+        JsonNode root = objectMapper.readTree(response);
+        if (root.has("scores") && root.path("scores").isArray()) {
+            List<Double> scores = new ArrayList<>();
+            root.path("scores").forEach(score -> scores.add(score.asDouble()));
+            return scores;
+        }
+        if (root.has("results") && root.path("results").isArray()) {
+            List<Double> scores = new ArrayList<>();
+            for (int i = 0; i < expectedSize; i++) {
+                scores.add(0.0);
+            }
+            for (JsonNode item : root.path("results")) {
+                int index = item.path("index").asInt(-1);
+                double score = item.has("relevance_score")
+                        ? item.path("relevance_score").asDouble()
+                        : item.path("score").asDouble();
+                if (index >= 0 && index < scores.size()) {
+                    scores.set(index, score);
+                }
+            }
+            return scores;
+        }
+        if (root.isArray()) {
+            List<Double> scores = new ArrayList<>();
+            root.forEach(score -> scores.add(score.asDouble()));
+            return scores;
+        }
+        return List.of();
     }
 
     private double scoreCandidate(

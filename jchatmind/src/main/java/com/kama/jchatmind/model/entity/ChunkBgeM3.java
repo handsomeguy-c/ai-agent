@@ -3,14 +3,18 @@ package com.kama.jchatmind.model.entity;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * @TableName chunk_bge_m3
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class ChunkBgeM3 {
     private String id;
 

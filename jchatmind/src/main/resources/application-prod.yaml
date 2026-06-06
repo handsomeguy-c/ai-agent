@@ -1,0 +1,18 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.zhipuai.autoconfigure.ZhiPuAiChatAutoConfiguration
+      - org.springframework.ai.model.zhipuai.autoconfigure.ZhiPuAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.zhipuai.autoconfigure.ZhiPuAiImageAutoConfiguration
+  devtools:
+    restart:
+      enabled: false
+
+document:
+  storage:
+    base-path: ${DOCUMENT_STORAGE_BASE_PATH:/app/data/documents}
+
+logging:
+  level:
+    root: INFO
+    com.kama.jchatmind: INFO

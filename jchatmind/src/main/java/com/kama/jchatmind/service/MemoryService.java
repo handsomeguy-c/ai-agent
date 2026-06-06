@@ -13,6 +13,8 @@ public interface MemoryService {
 
     void captureTurn(String agentId, String sessionId, String content);
 
+    Memory saveLongTermMemory(String agentId, String sessionId, String content);
+
     void saveMemory(Memory memory);
 
     void archiveMemory(String memoryId);

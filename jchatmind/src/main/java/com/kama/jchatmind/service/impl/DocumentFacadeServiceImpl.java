@@ -17,6 +17,7 @@ import com.kama.jchatmind.mapper.ChunkBgeM3Mapper;
 import com.kama.jchatmind.model.entity.ChunkBgeM3;
 import com.kama.jchatmind.service.DocumentFacadeService;
 import com.kama.jchatmind.service.DocumentStorageService;
+import com.kama.jchatmind.service.ElasticsearchChunkService;
 import com.kama.jchatmind.service.MarkdownParserService;
 import com.kama.jchatmind.service.RagService;
 import lombok.AllArgsConstructor;
@@ -30,7 +31,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @AllArgsConstructor
@@ -44,6 +47,7 @@ public class DocumentFacadeServiceImpl implements DocumentFacadeService {
     private final RagService ragService;
     private final ChunkBgeM3Mapper chunkBgeM3Mapper;
     private final ObjectMapper objectMapper;
+    private final ElasticsearchChunkService elasticsearchChunkService;
 
     @Override
     public GetDocumentsResponse getDocuments() {
@@ -226,8 +230,11 @@ public class DocumentFacadeServiceImpl implements DocumentFacadeService {
                 LocalDateTime now = LocalDateTime.now();
                 int chunkCount = 0;
 
-                // 为每个章节生成 chunk
-                for (MarkdownParserService.MarkdownSection section : sections) {
+                List<String> sectionPaths = buildSectionPaths(sections);
+
+                // 为每个章节生成带上下文增强信息的 chunk
+                for (int sectionOffset = 0; sectionOffset < sections.size(); sectionOffset++) {
+                    MarkdownParserService.MarkdownSection section = sections.get(sectionOffset);
                     String title = section.getTitle();
                     String content = section.getContent();
 
@@ -235,18 +242,28 @@ public class DocumentFacadeServiceImpl implements DocumentFacadeService {
                         continue;
                     }
 
-                    // 对标题 + 正文进行 embedding，避免只按标题召回导致正文相关性不足
-                    String embeddingText = (title + "\n" + (content == null ? "" : content)).trim();
+                    String sourceFileName = path.getFileName().toString();
+                    String sectionPath = sectionPaths.get(sectionOffset);
+                    String previousTitle = sectionOffset > 0 ? sections.get(sectionOffset - 1).getTitle() : null;
+                    String nextTitle = sectionOffset < sections.size() - 1 ? sections.get(sectionOffset + 1).getTitle() : null;
+                    String contextualSummary = buildContextualSummary(sourceFileName, section, sectionPath, previousTitle, nextTitle);
+
+                    // Contextual Retrieval：把文档名、章节路径、相邻章节与摘要一起送入 embedding。
+                    String embeddingText = buildEmbeddingText(contextualSummary, title, content);
                     float[] embedding = ragService.embed(embeddingText);
 
                     RagSearchResultDTO.ChunkMeta metadata = RagSearchResultDTO.ChunkMeta.builder()
                             .title(title)
+                            .sectionPath(sectionPath)
+                            .contextualSummary(contextualSummary)
+                            .previousTitle(previousTitle)
+                            .nextTitle(nextTitle)
                             .headingLevel(section.getHeadingLevel())
                             .chunkIndex(section.getSectionIndex())
                             .charStart(section.getCharStart())
                             .charEnd(section.getCharEnd())
                             .tokenCount(estimateTokenCount(embeddingText))
-                            .sourceFileName(path.getFileName().toString())
+                            .sourceFileName(sourceFileName)
                             .build();
 
                     // 创建 ChunkBgeM3 实体
@@ -265,6 +282,14 @@ public class DocumentFacadeServiceImpl implements DocumentFacadeService {
 
                     if (result > 0) {
                         chunkCount++;
+                        elasticsearchChunkService.indexChunk(
+                                chunk.getId(),
+                                kbId,
+                                documentId,
+                                sourceFileName,
+                                content != null ? content : "",
+                                metadata
+                        );
                         log.debug("创建 chunk 成功: title={}, chunkId={}", title, chunk.getId());
                     } else {
                         log.warn("创建 chunk 失败: title={}", title);
@@ -300,7 +325,7 @@ public class DocumentFacadeServiceImpl implements DocumentFacadeService {
             }
             metadata.setParseStatus(parseStatus);
             metadata.setChunkCount(chunkCount);
-            metadata.setParserVersion("markdown-heading-v1");
+            metadata.setParserVersion("markdown-contextual-v2");
             metadata.setEmbeddingModel("bge-m3");
             documentDTO.setMetadata(metadata);
             Document updated = documentConverter.toEntity(documentDTO);
@@ -321,6 +346,75 @@ public class DocumentFacadeServiceImpl implements DocumentFacadeService {
             return "unknown";
         }
         return filename.substring(filename.lastIndexOf(".") + 1).toLowerCase();
+    }
+
+    private List<String> buildSectionPaths(List<MarkdownParserService.MarkdownSection> sections) {
+        List<String> paths = new ArrayList<>();
+        Map<Integer, String> headingStack = new HashMap<>();
+        for (MarkdownParserService.MarkdownSection section : sections) {
+            int level = section.getHeadingLevel() == null ? 1 : section.getHeadingLevel();
+            headingStack.put(level, section.getTitle());
+            headingStack.keySet().removeIf(existingLevel -> existingLevel > level);
+
+            List<String> pathParts = new ArrayList<>();
+            for (int currentLevel = 1; currentLevel <= level; currentLevel++) {
+                String title = headingStack.get(currentLevel);
+                if (title != null && !title.isBlank()) {
+                    pathParts.add(title);
+                }
+            }
+            paths.add(String.join(" > ", pathParts));
+        }
+        return paths;
+    }
+
+    private String buildContextualSummary(
+            String sourceFileName,
+            MarkdownParserService.MarkdownSection section,
+            String sectionPath,
+            String previousTitle,
+            String nextTitle
+    ) {
+        StringBuilder summary = new StringBuilder();
+        summary.append("文档: ").append(sourceFileName).append("\n");
+        summary.append("章节路径: ").append(sectionPath == null || sectionPath.isBlank() ? section.getTitle() : sectionPath).append("\n");
+        if (previousTitle != null && !previousTitle.isBlank()) {
+            summary.append("上一章节: ").append(previousTitle).append("\n");
+        }
+        if (nextTitle != null && !nextTitle.isBlank()) {
+            summary.append("下一章节: ").append(nextTitle).append("\n");
+        }
+        summary.append("片段摘要: ").append(summarizeSection(section.getTitle(), section.getContent()));
+        return summary.toString();
+    }
+
+    private String summarizeSection(String title, String content) {
+        String normalizedContent = content == null ? "" : content.replaceAll("\\s+", " ").trim();
+        if (normalizedContent.isBlank()) {
+            return title;
+        }
+        int maxLength = 220;
+        String snippet = normalizedContent.length() <= maxLength
+                ? normalizedContent
+                : normalizedContent.substring(0, maxLength) + "...";
+        return title + " - " + snippet;
+    }
+
+    private String buildEmbeddingText(String contextualSummary, String title, String content) {
+        return ("""
+                【上下文】
+                %s
+
+                【标题】
+                %s
+
+                【正文】
+                %s
+                """).formatted(
+                contextualSummary == null ? "" : contextualSummary,
+                title == null ? "" : title,
+                content == null ? "" : content
+        ).trim();
     }
 
     @Override

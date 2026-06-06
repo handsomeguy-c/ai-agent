@@ -3,6 +3,7 @@ package com.kama.jchatmind.config;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.zhipuai.ZhiPuAiChatModel;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -16,6 +17,7 @@ public class MultiChatClientConfig {
 
     // zhipuai
     @Bean("glm-4.6")
+    @ConditionalOnBean(ZhiPuAiChatModel.class)
     public ChatClient zhiPuAiChatClient(ZhiPuAiChatModel zhiPuAiChatModel) {
         return ChatClient.create(zhiPuAiChatModel);
     }

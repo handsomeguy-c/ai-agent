@@ -34,4 +34,9 @@ public interface ChunkBgeM3Mapper {
             @Param("keywords") List<String> keywords,
             @Param("limit") int limit
     );
+
+    List<ChunkBgeM3> selectRecentByKbId(
+            @Param("kbId") String kbId,
+            @Param("limit") int limit
+    );
 }

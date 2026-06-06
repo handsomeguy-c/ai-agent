@@ -1,8 +1,116 @@
+# JChatMind
 
-* **Agent 三模式**：支持 ReAct、Plan-and-Execute、Reflection 三种执行模式，前端创建/编辑 Agent 时可切换；后端运行时分别执行工具循环、先规划后执行、执行后反思校验。
-* **工具调用框架**：工具统一由 `ToolFacadeService` 注册和治理，提供 `/api/tools/list` 输出工具 schema，提供 `/api/tools/call` 统一封装工具调用，便于接入 MCP 风格的远程工具发现和调用。
-* **记忆模块**：按 Memo 思路实现感知记忆、短期记忆、长期记忆、实体记忆；支持会话滑动窗口、摘要压缩、长期记忆抽取、向量召回、实体事实更新和时间衰减召回。
-* **RAG 管线**：Markdown 结构化切分后入库，查询侧增加意图识别、关键词抽取、Query Rewrite、Query Embedding，召回侧实现向量检索 + BM25/关键词检索混合召回，再接本地 rerank 精排和上下文 packing。
-* **安全配置**：模型 API Key 和邮件授权码已改为环境变量读取，避免 GitHub 泄露密钥。
+JChatMind is an AI Agent collaboration platform built with Spring Boot, Spring AI, React, PostgreSQL, and pgvector. It focuses on Agent execution modes, tool calling, memory management, and RAG-enhanced knowledge retrieval.
 
+## Features
 
+- **Agent modes**: ReAct, Plan-and-Execute, and Reflection. The frontend can switch execution mode when creating or editing an Agent.
+- **Tool calling and MCP**: Centralized tool registry, Spring AI tool callbacks, `/api/tools/list` schema discovery, `/api/tools/call` managed invocation, an MCP client adapter with `initialize` / `tools/list` / `tools/call`, and a built-in RAG/memory MCP server at `/api/mcp/rag`.
+- **Memory module**: Mem0-style perceptual memory, short-term memory, long-term memory, and entity memory with vector recall, explicit MCP long-term memory writes, entity fact updates, and time-decay ranking.
+- **RAG pipeline**: Markdown parsing, contextual chunk enrichment, contextual indexing, LLM structured query rewrite/intent/keyword extraction, query embedding, vector retrieval, Elasticsearch BM25 coarse ranking, hybrid recall, cross-encoder rerank, and context packing.
+- **Realtime UX**: SSE streams Agent status and generated content to the frontend.
+- **Deployable stack**: Docker Compose with frontend Nginx, backend Spring Boot, PostgreSQL + pgvector, and optional Ollama embeddings. Only the frontend is exposed by default.
+
+## Tech Stack
+
+- Backend: Spring Boot 3.5, Spring AI 1.1, MyBatis, PostgreSQL, pgvector
+- Frontend: React 19, Vite, Ant Design
+- AI: DeepSeek / ZhipuAI chat models, Ollama `bge-m3` embeddings by default
+- Deployment: Docker, Docker Compose, Nginx, Elasticsearch
+
+## Local Development
+
+Backend:
+
+```bash
+cd jchatmind
+./mvnw -DskipTests compile
+./mvnw spring-boot:run
+```
+
+Frontend:
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Default local URLs:
+
+- Frontend: `http://127.0.0.1:5173`
+- Backend: `http://localhost:8083`
+- Health: `http://localhost:8083/api/health`
+
+## Docker Deployment
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md).
+
+Quick start:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose exec ollama ollama pull bge-m3
+```
+
+Open:
+
+```text
+http://localhost
+```
+
+## Required Environment Variables
+
+At minimum, set these in `.env` for production-like deployment:
+
+```dotenv
+POSTGRES_PASSWORD=change_me_strong_password
+DEEPSEEK_API_KEY=your_key
+APP_CORS_ALLOWED_ORIGIN_PATTERNS=https://your-domain.com
+```
+
+For embeddings:
+
+```dotenv
+RAG_EMBEDDING_BASE_URL=http://ollama:11434
+RAG_EMBEDDING_MODEL=bge-m3
+```
+
+For optional remote MCP tools:
+
+```dotenv
+APP_MCP_ENABLED=true
+APP_MCP_SERVERS_0_NAME=browser
+APP_MCP_SERVERS_0_ENDPOINT=http://your-mcp-server/mcp
+```
+
+For Elasticsearch BM25:
+
+```dotenv
+APP_ELASTICSEARCH_ENABLED=true
+APP_ELASTICSEARCH_BASE_URL=http://elasticsearch:9200
+APP_ELASTICSEARCH_INDEX_NAME=jchatmind_chunks
+```
+
+For cross-encoder rerank and LLM query rewrite:
+
+```dotenv
+APP_RERANK_ENABLED=true
+APP_RERANK_ENDPOINT=http://reranker:8080/rerank
+APP_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+APP_QUERY_REWRITE_LLM_ENABLED=true
+APP_QUERY_REWRITE_MODEL=deepseek-chat
+```
+
+## Demo
+
+See [DEMO.md](./DEMO.md) for the interview demo flow.
+
+## Verification
+
+```bash
+cd jchatmind && ./mvnw -q -DskipTests compile
+cd ../ui && npm run build
+docker compose config
+```

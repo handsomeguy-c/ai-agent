@@ -41,5 +41,28 @@ document:
   storage:
     base-path: ./data/documents
 
+rag:
+  embedding:
+    base-url: ${RAG_EMBEDDING_BASE_URL:http://localhost:11434}
+    model: ${RAG_EMBEDDING_MODEL:bge-m3}
+
+app:
+  cors:
+    allowed-origin-patterns: ${APP_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}
+  mcp:
+    enabled: ${APP_MCP_ENABLED:false}
+    servers: []
+  elasticsearch:
+    enabled: ${APP_ELASTICSEARCH_ENABLED:false}
+    base-url: ${APP_ELASTICSEARCH_BASE_URL:http://localhost:9200}
+    index-name: ${APP_ELASTICSEARCH_INDEX_NAME:jchatmind_chunks}
+  rerank:
+    enabled: ${APP_RERANK_ENABLED:false}
+    endpoint: ${APP_RERANK_ENDPOINT:http://localhost:8081/rerank}
+    model: ${APP_RERANK_MODEL:BAAI/bge-reranker-v2-m3}
+  query-rewrite:
+    llm-enabled: ${APP_QUERY_REWRITE_LLM_ENABLED:true}
+    model: ${APP_QUERY_REWRITE_MODEL:deepseek-chat}
+
 server:
   port: ${SERVER_PORT:8083}

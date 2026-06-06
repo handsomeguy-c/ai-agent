@@ -5,6 +5,9 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.Getter;
+import com.kama.jchatmind.model.workflow.AgentExecutionState;
+import com.kama.jchatmind.model.workflow.Plan;
+import com.kama.jchatmind.model.workflow.StepResult;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 
@@ -36,6 +39,9 @@ public class ChatMessageDTO {
         private List<CitationDTO> citations;
         private Double importanceScore;
         private String memoryAction;
+        private Plan plan;
+        private StepResult stepResult;
+        private AgentExecutionState workflowState;
     }
 
     @Getter

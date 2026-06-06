@@ -1,5 +1,7 @@
 .DS_Store
 .idea/
+.env
+.env.local
 
 jchatmind/target/
 jchatmind/src/main/resources/application-dev.yaml

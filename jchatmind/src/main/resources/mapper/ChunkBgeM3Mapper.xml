@@ -36,7 +36,7 @@
         VALUES (CAST(#{kbId} AS uuid),
                 CAST(#{docId} AS uuid),
                 #{content},
-                #{metadata},
+                CAST(#{metadata} AS jsonb),
                 #{embedding}::vector,
                 #{createdAt},
                 #{updatedAt})
@@ -74,7 +74,7 @@
                 content = #{content},
             </if>
             <if test="metadata != null">
-                metadata = #{metadata},
+                metadata = CAST(#{metadata} AS jsonb),
             </if>
             <if test="embedding != null">
                 embedding = #{embedding}::vector,
@@ -92,7 +92,7 @@
                d.filename AS doc_name,
                c.content,
                c.metadata::text AS metadata,
-               c.embedding,
+               NULL AS embedding,
                (c.embedding <-> #{vectorLiteral}::vector) AS distance,
                c.created_at,
                c.updated_at
@@ -112,7 +112,7 @@
                    d.filename AS doc_name,
                    c.content,
                    c.metadata::text AS metadata,
-                   c.embedding,
+                   NULL AS embedding,
                    ts_rank_cd(
                            to_tsvector('simple', COALESCE(c.content, '') || ' ' || COALESCE(c.metadata::text, '') || ' ' || COALESCE(d.filename, '')),
                            plainto_tsquery('simple', #{query})
@@ -147,6 +147,26 @@
             </foreach>
         </if>
         ORDER BY keyword_rank DESC, updated_at DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectRecentByKbId" resultMap="BaseResultMap">
+        SELECT c.id,
+               c.kb_id,
+               c.doc_id,
+               d.filename AS doc_name,
+               c.content,
+               c.metadata::text AS metadata,
+               NULL AS embedding,
+               0.85 AS distance,
+               c.created_at,
+               c.updated_at
+        FROM chunk_bge_m3 c
+        LEFT JOIN document d ON d.id = c.doc_id
+        WHERE c.kb_id = CAST(#{kbId} AS uuid)
+        ORDER BY d.updated_at DESC,
+                 ((c.metadata ->> 'chunkIndex')::int) ASC NULLS LAST,
+                 c.created_at ASC
         LIMIT #{limit}
     </select>
 </mapper>

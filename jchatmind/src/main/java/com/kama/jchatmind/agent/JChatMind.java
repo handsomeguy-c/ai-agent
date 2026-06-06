@@ -9,6 +9,14 @@ import com.kama.jchatmind.model.dto.ChatMessageDTO;
 import com.kama.jchatmind.model.dto.KnowledgeBaseDTO;
 import com.kama.jchatmind.model.dto.RagToolResponseDTO;
 import com.kama.jchatmind.model.entity.ToolExecutionLog;
+import com.kama.jchatmind.model.workflow.AgentExecutionState;
+import com.kama.jchatmind.model.workflow.ContextState;
+import com.kama.jchatmind.model.workflow.Plan;
+import com.kama.jchatmind.model.workflow.PlanStep;
+import com.kama.jchatmind.model.workflow.StepResult;
+import com.kama.jchatmind.model.workflow.StepStatus;
+import com.kama.jchatmind.model.workflow.StepType;
+import com.kama.jchatmind.model.workflow.WorkflowStatus;
 import com.kama.jchatmind.model.response.CreateChatMessageResponse;
 import com.kama.jchatmind.model.vo.ChatMessageVO;
 import com.kama.jchatmind.service.ChatMessageFacadeService;
@@ -30,7 +38,11 @@ import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -95,6 +107,10 @@ public class JChatMind {
 
     private String memoryPrompt;
 
+    private String userInput;
+
+    private AgentExecutionState workflowState;
+
     // AI 返回的，已经持久化，但是需要 sse 发给前端的消息
     private final List<ChatMessageDTO> pendingChatMessages = new ArrayList<>();
 
@@ -119,7 +135,8 @@ public class JChatMind {
                      ObjectMapper objectMapper,
                      ToolExecutionLogService toolExecutionLogService,
                      AgentDTO.ExecutionMode executionMode,
-                     String memoryPrompt
+                     String memoryPrompt,
+                     String userInput
     ) {
         this.agentId = agentId;
         this.name = name;
@@ -140,6 +157,7 @@ public class JChatMind {
         this.toolExecutionLogService = toolExecutionLogService;
         this.executionMode = executionMode == null ? AgentDTO.ExecutionMode.REACT : executionMode;
         this.memoryPrompt = memoryPrompt;
+        this.userInput = userInput;
 
         this.agentState = AgentState.IDLE;
 
@@ -161,6 +179,7 @@ public class JChatMind {
 
         // 工具调用管理器
         this.toolCallingManager = ToolCallingManager.builder().build();
+        this.workflowState = buildInitialWorkflowState();
     }
 
     // 打印工具调用信息
@@ -349,11 +368,11 @@ public class JChatMind {
     }
 
     // 执行
-    private void execute() {
+    private ToolResponseMessage execute() {
         Assert.notNull(this.lastChatResponse, "Last chat client response cannot be null");
 
         if (!this.lastChatResponse.hasToolCalls()) {
-            return;
+            return null;
         }
 
         Prompt prompt = Prompt.builder()
@@ -393,6 +412,7 @@ public class JChatMind {
             this.agentState = AgentState.FINISHED;
             log.info("任务结束");
         }
+        return toolResponseMessage;
     }
 
     private void recordToolExecutionLogs(ToolResponseMessage toolResponseMessage, long durationMs) {
@@ -454,8 +474,10 @@ public class JChatMind {
     private String modeInstruction() {
         return switch (executionMode) {
             case PLAN_AND_EXECUTE -> """
-                    Plan-and-Execute：先使用规划结果拆解任务，再逐步调用工具执行；每一步尽量说明依据，执行完成后汇总。
-                    如果计划中的某一步缺少证据，优先调用知识库或可用工具补全。
+                    Plan-and-Execute：你是中心调度器，先把任务拆成结构化 Plan，再分派给专家 Agent 执行。
+                    专家包括 Planner、KnowledgeExpert(RAG/MCP)、MemoryExpert(Mem0-style)、ToolExpert(FunctionCalling/MCP)、SynthesisExpert、Verifier。
+                    每一步生成 StepResult，包含 step、expert、action、observation、nextDecision。
+                    如果计划中的某一步缺少证据，优先调用知识库、记忆或 MCP 工具补全；执行完成后聚合结果并终止。
                     """;
             case REFLECTION -> """
                     Reflection：按 ReAct 完成任务后，在最终回答前做自检，检查是否遗漏用户目标、工具证据和引用来源。
@@ -470,11 +492,13 @@ public class JChatMind {
     private void producePlan() {
         sendAgentStatus(SseMessage.Type.AI_PLANNING, "AI 正在生成执行计划");
         String planPrompt = """
-                你是中心调度 Planner，请根据用户目标、长期记忆、知识库和可用工具生成 3-6 步执行计划。
+                你是中心调度器 Planner，请根据用户目标、长期记忆、知识库和可用工具生成 3-6 步执行计划。
                 输出要求：
-                1. 每一步必须有明确目标。
-                2. 标注需要调用的工具或知识库。
-                3. 不要编造工具结果，计划完成后等待执行阶段处理。
+                1. 每一步必须包含 expert、goal、expectedTool、successCriteria。
+                2. 可用专家：Planner、KnowledgeExpert(RAG/MCP)、MemoryExpert(Mem0-style)、ToolExpert(FunctionCalling/MCP)、SynthesisExpert、Verifier。
+                3. 如果需要知识库证据，标注 KnowledgeTool 或 MCP rag.hybrid_search。
+                4. 如果用户要求记住长期事实，标注 MCP memory.save_long_term。
+                5. 不要编造工具结果，计划完成后等待执行阶段处理。
                 """;
         Prompt prompt = Prompt.builder()
                 .chatOptions(this.chatOptions)
@@ -534,6 +558,378 @@ public class JChatMind {
         refreshPendingMessages();
     }
 
+    private AgentExecutionState buildInitialWorkflowState() {
+        LocalDateTime now = LocalDateTime.now();
+        return AgentExecutionState.builder()
+                .agentId(agentId)
+                .sessionId(chatSessionId)
+                .userInput(userInput)
+                .executionMode(executionMode)
+                .status(WorkflowStatus.CREATED)
+                .currentStepIndex(0)
+                .contextState(ContextState.builder()
+                        .userInput(userInput)
+                        .memoryPrompt(memoryPrompt)
+                        .availableToolNames(availableTools == null ? List.of() : availableTools.stream()
+                                .map(callback -> callback.getToolDefinition().name())
+                                .toList())
+                        .availableKnowledgeBaseIds(availableKbs == null ? List.of() : availableKbs.stream()
+                                .map(KnowledgeBaseDTO::getId)
+                                .toList())
+                        .build())
+                .createdAt(now)
+                .updatedAt(now)
+                .build();
+    }
+
+    private void runPlanAndExecuteWorkflow() {
+        workflowState.setStatus(WorkflowStatus.PLANNING);
+        workflowState.setUpdatedAt(LocalDateTime.now());
+        Plan plan = createStructuredPlan(null);
+        workflowState.setPlan(plan);
+        persistPlanTrace("结构化执行计划已生成", plan);
+
+        workflowState.setStatus(WorkflowStatus.EXECUTING);
+        for (int i = 0; i < workflowState.getPlan().getSteps().size(); i++) {
+            workflowState.setCurrentStepIndex(i);
+            PlanStep planStep = workflowState.getPlan().getSteps().get(i);
+            StepResult result = executeWorkflowStep(planStep);
+            workflowState.addStepResult(result);
+            persistStepResultTrace(result);
+
+            if (result.getStatus() == StepStatus.FAILED) {
+                if (shouldReplan(result)) {
+                    workflowState.setStatus(WorkflowStatus.REPLANNING);
+                    workflowState.setReplanCount(workflowState.getReplanCount() + 1);
+                    Plan replanned = createStructuredPlan(result.getErrorMessage());
+                    workflowState.setPlan(replanned);
+                    persistPlanTrace("检测到步骤失败，已触发 Replan", replanned);
+                    i = -1;
+                    workflowState.getStepResults().clear();
+                    workflowState.setStatus(WorkflowStatus.EXECUTING);
+                    continue;
+                }
+                workflowState.setStatus(WorkflowStatus.FAILED);
+                workflowState.setTerminationReason("步骤失败且无法继续重规划: " + result.getErrorMessage());
+                return;
+            }
+        }
+
+        workflowState.setStatus(WorkflowStatus.VERIFYING);
+        StepResult verification = verifyWorkflowResult();
+        workflowState.addStepResult(verification);
+        persistStepResultTrace(verification);
+        workflowState.setStatus(verification.getStatus() == StepStatus.SUCCESS ? WorkflowStatus.FINISHED : WorkflowStatus.FAILED);
+        workflowState.setTerminationReason(verification.getObservation());
+        workflowState.setUpdatedAt(LocalDateTime.now());
+    }
+
+    private Plan createStructuredPlan(String replanReason) {
+        sendAgentStatus(SseMessage.Type.AI_PLANNING, replanReason == null ? "AI 正在生成结构化执行计划" : "AI 正在重新规划");
+        try {
+            String planPrompt = """
+                    你是 Plan-and-Execute 中心调度器。请输出严格 JSON，不要 Markdown。
+                    JSON Schema:
+                    {
+                      "goal": "用户目标",
+                      "steps": [
+                        {
+                          "stepId": "S1",
+                          "stepType": "RETRIEVAL|TOOL_CALL|MCP_TOOL_CALL|MEMORY_READ|MEMORY_WRITE|SYNTHESIS|VERIFICATION|DIRECT_ANSWER",
+                          "expert": "Planner|KnowledgeExpert|MemoryExpert|ToolExpert|SynthesisExpert|Verifier",
+                          "description": "步骤描述",
+                          "toolName": "可选工具名，如 KnowledgeTool、McpRemoteTool、memory.save_long_term",
+                          "input": {"query": "可选输入"},
+                          "expectedOutput": "预期产出"
+                        }
+                      ]
+                    }
+                    规划要求：
+                    - 复杂任务拆成 3-6 步。
+                    - 需要知识证据时使用 RETRIEVAL 或 MCP_TOOL_CALL。
+                    - 需要长期记忆时使用 MEMORY_WRITE。
+                    - 最后必须包含 SYNTHESIS 和 VERIFICATION。
+                    - 如果是重规划，请避开失败原因：%s
+                    """.formatted(replanReason == null ? "无" : replanReason);
+
+            Prompt prompt = Prompt.builder()
+                    .chatOptions(this.chatOptions)
+                    .messages(this.chatMemory.get(this.chatSessionId))
+                    .build();
+            ChatResponse planResponse = this.chatClient
+                    .prompt(prompt)
+                    .system(planPrompt)
+                    .call()
+                    .chatClientResponse()
+                    .chatResponse();
+            if (planResponse != null && planResponse.getResult() != null) {
+                AssistantMessage planMessage = planResponse.getResult().getOutput();
+                if (planMessage != null && StringUtils.hasLength(planMessage.getText())) {
+                    return parsePlan(planMessage.getText(), replanReason);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("结构化计划生成失败，降级为启发式 Plan: {}", e.getMessage());
+        }
+        return fallbackPlan(replanReason);
+    }
+
+    private Plan parsePlan(String text, String replanReason) throws Exception {
+        String json = extractJson(text);
+        Plan plan = objectMapper.readValue(json, Plan.class);
+        if (plan.getPlanId() == null) {
+            plan.setPlanId(UUID.randomUUID().toString());
+        }
+        plan.setGoal(StringUtils.hasLength(plan.getGoal()) ? plan.getGoal() : userInput);
+        plan.setVersion(workflowState.getReplanCount() + 1);
+        plan.setCreatedBy("PlannerAgent");
+        plan.setCreatedAt(LocalDateTime.now());
+        plan.setReplanReason(replanReason);
+        for (int i = 0; i < plan.getSteps().size(); i++) {
+            PlanStep step = plan.getSteps().get(i);
+            if (!StringUtils.hasLength(step.getStepId())) {
+                step.setStepId("S" + (i + 1));
+            }
+            if (step.getStepType() == null) {
+                step.setStepType(inferStepType(step.getDescription(), step.getToolName()));
+            }
+            if (!StringUtils.hasLength(step.getExpert())) {
+                step.setExpert(resolveExpert(step.getStepType()));
+            }
+            step.setStatus(StepStatus.PENDING);
+        }
+        return plan;
+    }
+
+    private Plan fallbackPlan(String replanReason) {
+        List<PlanStep> steps = new ArrayList<>();
+        boolean needsMemory = userInput != null && (userInput.contains("记住") || userInput.contains("偏好") || userInput.contains("长期记忆"));
+        boolean needsRetrieval = availableKbs != null && !availableKbs.isEmpty();
+        if (needsMemory) {
+            steps.add(buildStep("S1", StepType.MEMORY_WRITE, "MemoryExpert", "抽取用户偏好或稳定事实并写入长期记忆", "McpRemoteTool", "长期记忆写入结果"));
+        }
+        if (needsRetrieval) {
+            steps.add(buildStep("S" + (steps.size() + 1), StepType.RETRIEVAL, "KnowledgeExpert", "检索知识库并收集证据", "KnowledgeTool", "带引用的检索证据"));
+        }
+        steps.add(buildStep("S" + (steps.size() + 1), StepType.SYNTHESIS, "SynthesisExpert", "聚合记忆、工具结果和检索证据生成答案", null, "最终答案"));
+        steps.add(buildStep("S" + (steps.size() + 1), StepType.VERIFICATION, "Verifier", "审核答案完整性、依据和幻觉风险", null, "审核结论"));
+        return Plan.builder()
+                .planId(UUID.randomUUID().toString())
+                .goal(userInput)
+                .version(workflowState.getReplanCount() + 1)
+                .steps(steps)
+                .createdBy("HeuristicPlanner")
+                .createdAt(LocalDateTime.now())
+                .replanReason(replanReason)
+                .build();
+    }
+
+    private PlanStep buildStep(String stepId, StepType stepType, String expert, String description, String toolName, String expectedOutput) {
+        return PlanStep.builder()
+                .stepId(stepId)
+                .stepType(stepType)
+                .expert(expert)
+                .description(description)
+                .toolName(toolName)
+                .input(Map.of("userInput", userInput == null ? "" : userInput))
+                .expectedOutput(expectedOutput)
+                .status(StepStatus.PENDING)
+                .build();
+    }
+
+    private StepResult executeWorkflowStep(PlanStep planStep) {
+        LocalDateTime startedAt = LocalDateTime.now();
+        long started = System.currentTimeMillis();
+        planStep.setStatus(StepStatus.RUNNING);
+        sendAgentStatus(SseMessage.Type.AI_EXECUTING, "执行 " + planStep.getStepId() + "：" + planStep.getDescription());
+
+        if (planStep.getStepType() == StepType.VERIFICATION) {
+            return verifyWorkflowResult();
+        }
+
+        try {
+            this.chatMemory.add(chatSessionId, new SystemMessage(buildStepInstruction(planStep)));
+            boolean hasToolCall = think();
+            ToolResponseMessage toolResponseMessage = hasToolCall ? execute() : null;
+            String observation = buildObservation(toolResponseMessage);
+            planStep.setStatus(StepStatus.SUCCESS);
+            return StepResult.builder()
+                    .stepId(planStep.getStepId())
+                    .stepType(planStep.getStepType())
+                    .expert(planStep.getExpert())
+                    .status(StepStatus.SUCCESS)
+                    .observation(observation)
+                    .output(toolResponseMessage == null ? lastAssistantText() : toolResponseMessage.getResponses())
+                    .durationMs(System.currentTimeMillis() - started)
+                    .metadata(Map.of(
+                            "toolName", planStep.getToolName() == null ? "" : planStep.getToolName(),
+                            "expectedOutput", planStep.getExpectedOutput() == null ? "" : planStep.getExpectedOutput()
+                    ))
+                    .startedAt(startedAt)
+                    .finishedAt(LocalDateTime.now())
+                    .build();
+        } catch (Exception e) {
+            planStep.setStatus(StepStatus.FAILED);
+            return StepResult.builder()
+                    .stepId(planStep.getStepId())
+                    .stepType(planStep.getStepType())
+                    .expert(planStep.getExpert())
+                    .status(StepStatus.FAILED)
+                    .observation("步骤执行失败")
+                    .errorMessage(e.getMessage() == null ? e.toString() : e.getMessage())
+                    .durationMs(System.currentTimeMillis() - started)
+                    .startedAt(startedAt)
+                    .finishedAt(LocalDateTime.now())
+                    .build();
+        }
+    }
+
+    private String buildStepInstruction(PlanStep planStep) {
+        return """
+                当前进入 Plan-and-Execute 的单步执行阶段。
+                请只完成当前 Step，不要越权执行后续步骤。
+                Step:
+                - stepId: %s
+                - stepType: %s
+                - expert: %s
+                - description: %s
+                - toolName: %s
+                - input: %s
+                - expectedOutput: %s
+                执行要求：
+                - 如果 stepType 是 RETRIEVAL，请优先调用 KnowledgeTool 或 MCP RAG 工具。
+                - 如果 stepType 是 MEMORY_WRITE，请优先调用 MCP memory.save_long_term 或可用记忆工具。
+                - 如果 stepType 是 TOOL_CALL/MCP_TOOL_CALL，请生成明确 tool call。
+                - 如果 stepType 是 SYNTHESIS/DIRECT_ANSWER，请基于已有 StepResult 和上下文给出答案。
+                """.formatted(
+                planStep.getStepId(),
+                planStep.getStepType(),
+                planStep.getExpert(),
+                planStep.getDescription(),
+                planStep.getToolName(),
+                planStep.getInput(),
+                planStep.getExpectedOutput()
+        );
+    }
+
+    private StepResult verifyWorkflowResult() {
+        LocalDateTime startedAt = LocalDateTime.now();
+        boolean hasFailedStep = workflowState.getStepResults().stream().anyMatch(result -> result.getStatus() == StepStatus.FAILED);
+        boolean hasEvidence = !pendingCitations.isEmpty() || workflowState.getStepResults().stream()
+                .anyMatch(result -> result.getObservation() != null && (result.getObservation().contains("工具") || result.getObservation().contains("检索")));
+        StepStatus status = hasFailedStep ? StepStatus.FAILED : StepStatus.SUCCESS;
+        String observation = hasFailedStep
+                ? "Verifier: 存在失败步骤，任务不能可靠终止。"
+                : "Verifier: Plan 已执行完成，结果已聚合，" + (hasEvidence ? "包含工具或检索证据。" : "未发现外部证据，按直接回答终止。");
+        return StepResult.builder()
+                .stepId("VERIFY-" + (workflowState.getStepResults().size() + 1))
+                .stepType(StepType.VERIFICATION)
+                .expert("Verifier")
+                .status(status)
+                .observation(observation)
+                .durationMs(0L)
+                .startedAt(startedAt)
+                .finishedAt(LocalDateTime.now())
+                .build();
+    }
+
+    private boolean shouldReplan(StepResult result) {
+        return workflowState.getReplanCount() < workflowState.getMaxReplans()
+                && result.getErrorMessage() != null
+                && (result.getErrorMessage().contains("工具") || result.getErrorMessage().contains("检索") || result.getErrorMessage().contains("MCP"));
+    }
+
+    private void persistPlanTrace(String content, Plan plan) {
+        ChatMessageDTO dto = ChatMessageDTO.builder()
+                .role(ChatMessageDTO.RoleType.SYSTEM)
+                .content(content)
+                .sessionId(this.chatSessionId)
+                .metadata(ChatMessageDTO.MetaData.builder()
+                        .plan(plan)
+                        .workflowState(snapshotWorkflowState())
+                        .build())
+                .build();
+        CreateChatMessageResponse response = chatMessageFacadeService.createChatMessage(dto);
+        dto.setId(response.getChatMessageId());
+        pendingChatMessages.add(dto);
+        refreshPendingMessages();
+    }
+
+    private void persistStepResultTrace(StepResult result) {
+        ChatMessageDTO dto = ChatMessageDTO.builder()
+                .role(ChatMessageDTO.RoleType.SYSTEM)
+                .content("StepResult: " + result.getStepId() + " -> " + result.getStatus())
+                .sessionId(this.chatSessionId)
+                .metadata(ChatMessageDTO.MetaData.builder()
+                        .stepResult(result)
+                        .workflowState(snapshotWorkflowState())
+                        .build())
+                .build();
+        CreateChatMessageResponse response = chatMessageFacadeService.createChatMessage(dto);
+        dto.setId(response.getChatMessageId());
+        pendingChatMessages.add(dto);
+        refreshPendingMessages();
+    }
+
+    private AgentExecutionState snapshotWorkflowState() {
+        try {
+            return objectMapper.readValue(objectMapper.writeValueAsString(workflowState), AgentExecutionState.class);
+        } catch (Exception e) {
+            return workflowState;
+        }
+    }
+
+    private String buildObservation(ToolResponseMessage toolResponseMessage) {
+        if (toolResponseMessage != null) {
+            return toolResponseMessage.getResponses().stream()
+                    .map(response -> "工具 " + response.name() + " 返回：" + response.responseData())
+                    .collect(Collectors.joining("\n"));
+        }
+        return lastAssistantText();
+    }
+
+    private String lastAssistantText() {
+        if (lastChatResponse == null || lastChatResponse.getResult() == null || lastChatResponse.getResult().getOutput() == null) {
+            return "";
+        }
+        return lastChatResponse.getResult().getOutput().getText();
+    }
+
+    private StepType inferStepType(String description, String toolName) {
+        String text = ((description == null ? "" : description) + " " + (toolName == null ? "" : toolName)).toLowerCase();
+        if (text.contains("mcp")) return StepType.MCP_TOOL_CALL;
+        if (text.contains("检索") || text.contains("rag") || text.contains("knowledge")) return StepType.RETRIEVAL;
+        if (text.contains("记忆") || text.contains("memory")) return text.contains("写") || text.contains("save") ? StepType.MEMORY_WRITE : StepType.MEMORY_READ;
+        if (text.contains("工具") || text.contains("tool")) return StepType.TOOL_CALL;
+        if (text.contains("审核") || text.contains("校验") || text.contains("verify")) return StepType.VERIFICATION;
+        if (text.contains("聚合") || text.contains("总结") || text.contains("synthesis")) return StepType.SYNTHESIS;
+        return StepType.DIRECT_ANSWER;
+    }
+
+    private String resolveExpert(StepType stepType) {
+        return switch (stepType) {
+            case RETRIEVAL, MCP_TOOL_CALL -> "KnowledgeExpert";
+            case MEMORY_READ, MEMORY_WRITE -> "MemoryExpert";
+            case TOOL_CALL -> "ToolExpert";
+            case SYNTHESIS, DIRECT_ANSWER -> "SynthesisExpert";
+            case VERIFICATION -> "Verifier";
+            case PLANNING -> "Planner";
+        };
+    }
+
+    private String extractJson(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        if (trimmed.startsWith("```")) {
+            trimmed = trimmed.replaceFirst("^```(?:json)?", "").replaceFirst("```$", "").trim();
+        }
+        int start = trimmed.indexOf('{');
+        int end = trimmed.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return trimmed.substring(start, end + 1);
+        }
+        return trimmed;
+    }
+
     private void runLoop() {
         for (int i = 0; i < MAX_STEPS && agentState != AgentState.FINISHED; i++) {
             int currentStep = i + 1;
@@ -554,9 +950,10 @@ public class JChatMind {
 
         try {
             if (executionMode == AgentDTO.ExecutionMode.PLAN_AND_EXECUTE) {
-                producePlan();
+                runPlanAndExecuteWorkflow();
+            } else {
+                runLoop();
             }
-            runLoop();
             if (executionMode == AgentDTO.ExecutionMode.REFLECTION) {
                 reflect();
             }

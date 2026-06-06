@@ -212,7 +212,8 @@ public class JChatMindFactory {
             List<KnowledgeBaseDTO> knowledgeBases,
             List<ToolCallback> toolCallbacks,
             String chatSessionId,
-            String memoryPrompt
+            String memoryPrompt,
+            String userInput
     ) {
         ChatClient chatClient = chatClientRegistry.get(agent.getModel());
         if (Objects.isNull(chatClient)) {
@@ -235,7 +236,8 @@ public class JChatMindFactory {
                 objectMapper,
                 toolExecutionLogService,
                 agentConfig.getChatOptions().getExecutionMode(),
-                memoryPrompt
+                memoryPrompt,
+                userInput
         );
     }
 
@@ -279,7 +281,8 @@ public class JChatMindFactory {
                 knowledgeBases,
                 toolCallbacks,
                 chatSessionId,
-                memoryPrompt
+                memoryPrompt,
+                userInput
         );
     }
 }

@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kama.jchatmind.mapper.ChunkBgeM3Mapper;
 import com.kama.jchatmind.model.dto.RagSearchResultDTO;
 import com.kama.jchatmind.model.entity.ChunkBgeM3;
+import com.kama.jchatmind.service.ElasticsearchChunkService;
 import com.kama.jchatmind.service.RagService;
 import lombok.Data;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -19,12 +21,23 @@ public class RagServiceImpl implements RagService {
     // 封装本地的模型调用
     private final WebClient webClient;
     private final ChunkBgeM3Mapper chunkBgeM3Mapper;
+    private final ElasticsearchChunkService elasticsearchChunkService;
     private final ObjectMapper objectMapper;
+    private final String embeddingModel;
 
-    public RagServiceImpl(WebClient.Builder builder, ChunkBgeM3Mapper chunkBgeM3Mapper, ObjectMapper objectMapper) {
-        this.webClient = builder.baseUrl("http://localhost:11434").build();
+    public RagServiceImpl(
+            WebClient.Builder builder,
+            ChunkBgeM3Mapper chunkBgeM3Mapper,
+            ElasticsearchChunkService elasticsearchChunkService,
+            ObjectMapper objectMapper,
+            @Value("${rag.embedding.base-url:http://localhost:11434}") String embeddingBaseUrl,
+            @Value("${rag.embedding.model:bge-m3}") String embeddingModel
+    ) {
+        this.webClient = builder.baseUrl(embeddingBaseUrl).build();
         this.chunkBgeM3Mapper = chunkBgeM3Mapper;
+        this.elasticsearchChunkService = elasticsearchChunkService;
         this.objectMapper = objectMapper;
+        this.embeddingModel = embeddingModel;
     }
 
     @Data
@@ -36,7 +49,7 @@ public class RagServiceImpl implements RagService {
         EmbeddingResponse resp = webClient.post()
                 .uri("/api/embeddings")
                 .bodyValue(Map.of(
-                        "model", "bge-m3",
+                        "model", embeddingModel,
                         "prompt", text
                 ))
                 .retrieve()
@@ -67,6 +80,10 @@ public class RagServiceImpl implements RagService {
     public List<RagSearchResultDTO> keywordSearch(String kbId, String query, List<String> keywords, int limit) {
         if ((query == null || query.isBlank()) && (keywords == null || keywords.isEmpty())) {
             return List.of();
+        }
+        List<RagSearchResultDTO> esResults = elasticsearchChunkService.bm25Search(kbId, query, keywords, limit);
+        if (!esResults.isEmpty()) {
+            return esResults;
         }
         List<ChunkBgeM3> chunks = chunkBgeM3Mapper.keywordSearch(kbId, query == null ? "" : query, keywords, limit);
         return chunks.stream().map(this::toSearchResult).toList();

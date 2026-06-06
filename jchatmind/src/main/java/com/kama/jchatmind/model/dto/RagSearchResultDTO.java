@@ -25,6 +25,10 @@ public class RagSearchResultDTO {
     @AllArgsConstructor
     public static class ChunkMeta {
         private String title;
+        private String sectionPath;
+        private String contextualSummary;
+        private String previousTitle;
+        private String nextTitle;
         private Integer headingLevel;
         private Integer chunkIndex;
         private Integer charStart;
