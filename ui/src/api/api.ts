@@ -375,7 +375,11 @@ export interface ToolSchemaVO {
   description: string;
   type: ToolType;
   source: string;
+  sourceType?: "LOCAL" | "MCP";
   inputSchema: string;
+  timeoutMs?: number;
+  maxRetries?: number;
+  permissionLevel?: "PUBLIC" | "AGENT_ALLOWED" | "SENSITIVE";
   returnDirect: boolean;
 }
 

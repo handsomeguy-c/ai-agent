@@ -1,0 +1,68 @@
+spring:
+  application:
+    name: mindpilot
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/mindpilot}
+    username: ${SPRING_DATASOURCE_USERNAME:j}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+  mail:
+    host: ${MAIL_HOST:smtp.qq.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+  ai:
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      chat:
+        options:
+          model: deepseek-chat
+    zhipuai:
+      api-key: ${ZHIPUAI_API_KEY:}
+      base-url: ${ZHIPUAI_BASE_URL:https://open.bigmodel.cn/api/paas}
+      chat:
+        options:
+          model: glm-4.6
+mybatis:
+  type-aliases-package: com.kama.jchatmind.model.entity
+  mapper-locations: classpath:mapper/*.xml
+  type-handlers-package: com.kama.jchatmind.typehandler
+
+document:
+  storage:
+    base-path: ./data/documents
+
+rag:
+  embedding:
+    base-url: ${RAG_EMBEDDING_BASE_URL:http://localhost:11434}
+    model: ${RAG_EMBEDDING_MODEL:bge-m3}
+
+app:
+  cors:
+    allowed-origin-patterns: ${APP_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}
+  mcp:
+    enabled: ${APP_MCP_ENABLED:false}
+    servers: []
+  elasticsearch:
+    enabled: ${APP_ELASTICSEARCH_ENABLED:false}
+    base-url: ${APP_ELASTICSEARCH_BASE_URL:http://localhost:9200}
+    index-name: ${APP_ELASTICSEARCH_INDEX_NAME:mindpilot_chunks}
+  rerank:
+    enabled: ${APP_RERANK_ENABLED:false}
+    endpoint: ${APP_RERANK_ENDPOINT:http://localhost:8081/rerank}
+    model: ${APP_RERANK_MODEL:BAAI/bge-reranker-v2-m3}
+  query-rewrite:
+    llm-enabled: ${APP_QUERY_REWRITE_LLM_ENABLED:true}
+    model: ${APP_QUERY_REWRITE_MODEL:deepseek-chat}
+
+server:
+  port: ${SERVER_PORT:8083}

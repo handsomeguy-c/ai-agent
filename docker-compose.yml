@@ -1,15 +1,15 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: jchatmind-postgres
+    container_name: mindpilot-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-jchatmind}
-      POSTGRES_USER: ${POSTGRES_USER:-jchatmind}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jchatmind_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mindpilot}
+      POSTGRES_USER: ${POSTGRES_USER:-mindpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mindpilot_password}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./jchatmind_assert/jchatmind.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+      - ./mindpilot_assert/mindpilot.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -17,13 +17,13 @@ services:
       retries: 10
   ollama:
     image: ollama/ollama:latest
-    container_name: jchatmind-ollama
+    container_name: mindpilot-ollama
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
-    container_name: jchatmind-elasticsearch
+    container_name: mindpilot-elasticsearch
     restart: unless-stopped
     environment:
       discovery.type: single-node
@@ -38,9 +38,9 @@ services:
       retries: 20
   backend:
     build:
-      context: ./jchatmind
-    image: jchatmind-backend:latest
-    container_name: jchatmind-backend
+      context: ./mindpilot
+    image: mindpilot-backend:latest
+    container_name: mindpilot-backend
     restart: unless-stopped
     depends_on:
       postgres:
@@ -52,9 +52,9 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8083
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-jchatmind}
-      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-jchatmind}
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-jchatmind_password}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-mindpilot}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-mindpilot}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-mindpilot_password}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
@@ -69,7 +69,7 @@ services:
       APP_MCP_SERVERS_0_DESCRIPTION: ${APP_MCP_SERVERS_0_DESCRIPTION:-}
       APP_ELASTICSEARCH_ENABLED: ${APP_ELASTICSEARCH_ENABLED:-true}
       APP_ELASTICSEARCH_BASE_URL: ${APP_ELASTICSEARCH_BASE_URL:-http://elasticsearch:9200}
-      APP_ELASTICSEARCH_INDEX_NAME: ${APP_ELASTICSEARCH_INDEX_NAME:-jchatmind_chunks}
+      APP_ELASTICSEARCH_INDEX_NAME: ${APP_ELASTICSEARCH_INDEX_NAME:-mindpilot_chunks}
       APP_RERANK_ENABLED: ${APP_RERANK_ENABLED:-false}
       APP_RERANK_ENDPOINT: ${APP_RERANK_ENDPOINT:-http://reranker:8080/rerank}
       APP_RERANK_MODEL: ${APP_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
@@ -86,8 +86,8 @@ services:
       context: ./ui
       args:
         VITE_API_BASE_URL: /api
-    image: jchatmind-frontend:latest
-    container_name: jchatmind-frontend
+    image: mindpilot-frontend:latest
+    container_name: mindpilot-frontend
     restart: unless-stopped
     depends_on:
       - backend

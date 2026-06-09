@@ -2,6 +2,7 @@
 .idea/
 .env
 .env.local
+.demo-output/
 
 jchatmind/target/
 jchatmind/src/main/resources/application-dev.yaml
@@ -12,3 +13,5 @@ ui/dist-ssr/
 ui/*.local
 
 *.log
+__pycache__/
+*.pyc

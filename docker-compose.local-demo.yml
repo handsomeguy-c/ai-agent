@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mindpilot-demo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mindpilot}
+      POSTGRES_USER: ${POSTGRES_USER:-mindpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mindpilot_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+      - ./mindpilot_assert/mindpilot.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./mindpilot
+    image: mindpilot-backend:latest
+    container_name: mindpilot-demo-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8083}:8083"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8083
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-mindpilot}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-mindpilot}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-mindpilot_password}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-dummy}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
+      ZHIPUAI_BASE_URL: ${ZHIPUAI_BASE_URL:-https://open.bigmodel.cn/api/paas}
+      RAG_EMBEDDING_BASE_URL: ${RAG_EMBEDDING_BASE_URL:-http://127.0.0.1:9}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-bge-m3}
+      DOCUMENT_STORAGE_BASE_PATH: /app/data/documents
+      APP_MCP_ENABLED: false
+      APP_ELASTICSEARCH_ENABLED: false
+      APP_RERANK_ENABLED: false
+      APP_QUERY_REWRITE_LLM_ENABLED: false
+      APP_QUERY_REWRITE_MODEL: deepseek-chat
+      MAIL_HOST: ${MAIL_HOST:-smtp.qq.com}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+    volumes:
+      - demo_document_data:/app/data/documents
+
+volumes:
+  demo_postgres_data:
+  demo_document_data:
